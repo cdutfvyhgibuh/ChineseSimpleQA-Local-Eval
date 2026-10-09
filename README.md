@@ -1,10 +1,8 @@
 # ChineseSimpleQA-Local-Eval
 
-> **完全本地的中文事实问答评测实践：从"比谁分高"到"确认分数可不可信"**
+> **在本地环境中评测中文事实问答模型，并检查 Judge 的判定可靠性**
 >
-> 在单张 RTX 5080 16GB 上，用 Ollama 部署 3 个不同架构的中文大模型，
-> 固定同一套经过人工校准的本地 Judge，完成 3000 题 × 3 模型的统一评测，
-> 并完整保留预测与判定原始数据，使实验可复现、可复核、可更换 Judge。
+> 本项目在单张 RTX 5080 16GB 上通过 Ollama 评测 3 个不同架构的中文模型。三个模型使用同一款经过人工校准的本地 Judge，对 3000 道题进行评分；预测和判定的原始记录均予以保留，便于复现、复核，以及使用其他 Judge 重新评分。
 
 📊 **[在线查看交互式评测报告 →](https://cdutfvyhgibuh.github.io/ChineseSimpleQA-Local-Eval/)**
 （8 张可交互图表：总体指标、分类别热力图、难度分层、模型互补性、Judge 可信度）
@@ -13,36 +11,23 @@
 
 ## English Abstract
 
-This project builds a fully local evaluation pipeline for **ChineseSimpleQA** (a 3,000-question
-Chinese factual QA benchmark) on a single RTX 5080 16GB machine, eliminating network variability
-from the measurement.
+This project runs **ChineseSimpleQA**, a 3,000-question Chinese factual QA benchmark, entirely on a single RTX 5080 16GB machine via Ollama to reduce network-related variation.
 
-Three target models spanning distinct architectures — **Qwen2.5 7B Instruct** (Dense/Instruct),
-**DeepSeek-R1 7B** (Reasoning), and **DeepSeek-V2 16B** (MoE) — are evaluated against an identical,
-human-calibrated local judge (**DeepSeek-R1 14B**), producing 9,000 judgments.
+It evaluates **Qwen2.5 7B Instruct** (Dense/Instruct), **DeepSeek-R1 7B** (Reasoning), and **DeepSeek-V2 16B** (MoE) using the same manually calibrated local judge, **DeepSeek-R1 14B**, for 9,000 judgments.
 
-The central finding is methodological rather than a simple leaderboard: **the judge's own error mode
-matters more than the accuracy it reports.** Candidate judges were benchmarked on a shared 50-question
-set, their failure directions (over-strict / over-lenient / class-C abuse) were identified, 15 disputed
-items were manually adjudicated with 5 facts independently web-verified, and a boundary-rule-hardened
-prompt variant was designed and A/B tested. That experiment showed the prompt was *not* the bottleneck
-for the selected judge — an honest negative result that informed the final design.
+Before the full run, four candidate judges were compared on 50 questions. Their tendencies toward overly strict or lenient grading and misuse of class C were recorded. Fifteen disputed items were manually reviewed, and five facts were independently checked online. A prompt with explicit boundary rules was A/B tested but did not reduce DeepSeek-R1 14B's total errors, so the official grading template was retained.
 
-**Results (F1):** DeepSeek-V2 16B **39.8%** > Qwen2.5 7B **33.9%** > DeepSeek-R1 7B **11.3%**.
-Notably, 50.9% of questions were missed by all three models, and the lowest pairwise
-judgment-agreement was only 47.5% — evidence of strong knowledge complementarity despite similar scale.
+**Results (F1):** DeepSeek-V2 16B **39.8%**, Qwen2.5 7B **33.9%**, and DeepSeek-R1 7B **11.3%**. All models missed 50.9% of questions; pairwise agreement fell to 47.5%, while each model also answered some items the others missed.
 
 ---
 
 ## 1 上游项目本地化：把官方评测搬到本机
 
-本项目的数据集与评分口径来自开源项目 **[LivingFutureLab/ChineseSimpleQA](https://github.com/LivingFutureLab/ChineseSimpleQA)**。
-但在本机真正跑起来之前，上游代码有若干处**无法直接复用**。这一节记录逐项定位与处置过程——
-它本身也是本项目工作量的一部分。
+本项目使用开源项目 **[LivingFutureLab/ChineseSimpleQA](https://github.com/LivingFutureLab/ChineseSimpleQA)** 提供的数据集与评分口径。为在本机通过 Ollama 完成评测，我检查了上游脚本的输入格式、依赖和评分解析方式，并记录了实际遇到的问题及相应处理。
 
-### 2.1 上游提供的三条评测路径，都依赖外部条件
+### 1.1 上游提供的三条评测路径
 
-上游 README 给出三种评测方式：
+上游 README 介绍了三种运行方式：
 
 | 路径 | 依赖 | 本地化障碍 |
 |---|---|---|
@@ -50,15 +35,13 @@ judgment-agreement was only 47.5% — evidence of strong knowledge complementari
 | 独立脚本 `scripts/chinese_simpleqa_easy.py`（运行入口 `judge/chinese_simpleqa_easy.py`） | 需在源码里硬编码 `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 评测逻辑与云端客户端耦合 |
 | OpenCompass 框架 | `git clone open-compass` + 按其 config 配置模型 | 框架重、模型接入方式受限，不适合 Ollama 直连 |
 
-三条路径的共同点是：**评测程序、推理后端、数据格式三者被绑定在一起**，
-并不存在一个「自带模型回答」的本地入口。
-所以本项目的做法是：**只复用数据集与 A/B/C 评分口径，评测执行链路自己重写**。
+这三种方式都把评测程序与特定推理后端或数据格式联系在一起，没有可以直接接收本地模型回答的独立入口。因此，本项目保留数据集和 A/B/C 评分口径，另行实现了面向 Ollama 的执行流程。
 
-### 2.2 五处真实的「水土不服」（逐项查证）
+### 1.2 上游代码与本地运行环境的差异
 
-以下问题都是逐行读上游代码定位出来的，不是猜测。
+以下问题均根据上游代码逐项检查后记录。
 
-**① 数据格式不匹配** —— 上游读 CSV，本项目用 JSONL
+**① 数据格式不同：上游读取 CSV，本项目使用 JSONL**
 
 ```python
 # chinese_simpleqa_eval.py:99
@@ -68,7 +51,7 @@ df = pandas.read_csv('chinese_simpleqa.csv')
 - **硬编码相对路径**：依赖「当前工作目录下正好有个叫 `chinese_simpleqa.csv` 的文件」
 - **格式不一致**：本项目使用的是 `data/chinese_simpleqa.jsonl`
 
-**② 字段名不匹配（最隐蔽，会让评测「跑得通但全错」）**
+**② 字段名不匹配**
 
 上游代码读取的字段名是 `problem`：
 
@@ -84,13 +67,9 @@ sampler._pack_message(content=row.get("problem", ""), role="user")
  "question": "...", "answer": "...", "urls": "..."}
 ```
 
-**数据里根本没有 `problem` 字段。** 而 `row.get("problem", "")` 带了默认值，
-于是它**不会报错，只会安静地取到空字符串** —— 结果是拿空问题去问模型、
-再拿空回答去评分。**评测会正常跑完，并输出一份完全无意义的分数。**
+数据集中没有 `problem` 字段。由于 `row.get("problem", "")` 设置了默认值，程序不会因此报错，而是把空字符串作为问题传给模型，随后继续评分。这样一来，评测可能顺利结束，却无法得到有效结果。
 
-> 这是整个本地化过程中最值得记录的一处：**它不崩、不报错、不告警，只是安静地给出错误结论。**
-> 重写时把字段名统一为 `question`，并对每条记录做 id 与数据集的集合一致性校验
-> （见第 10 节），从机制上堵住这类「静默错误」。
+本地版本改用 `question` 字段，并检查每条记录的 id 是否与数据集中的 id 集合一致（见第 10 节），以便尽早发现这类静默错误。
 
 **③ 相对导入与包结构**
 
@@ -100,9 +79,7 @@ from . import common
 from .types_local import Eval, EvalResult, SamplerBase, SingleEvalResult
 ```
 
-`from . import ...` 是**包内相对导入**，意味着该文件必须作为某个包的一部分被导入，
-不能直接 `python chinese_simpleqa_eval.py` 运行。
-本地重写时改为同级模块直接 `import`，不依赖包结构。
+`from . import ...` 属于包内相对导入，因此该文件需要作为包的一部分导入，不能直接通过 `python chinese_simpleqa_eval.py` 运行。本地版本改用同级模块的直接 `import`，不再依赖原有包结构。
 
 **④ 多余的重量级依赖**
 
@@ -112,12 +89,9 @@ import blobfile as bf
 import pandas
 ```
 
-`blobfile` 是面向云端对象存储的库，本地评测完全用不到——实测本环境**并未安装**它
-（`ImportError`）。`pandas` 对这个规模的数据也非必需。
-本地重写只依赖 `openai`（指向 Ollama 的 OpenAI 兼容端点）、`pyyaml`、`requests`、`tqdm`，
-HTML 报告额外用 `plotly`。
+`blobfile` 用于访问对象存储，本地评测不需要该库；当前环境也未安装它，运行时会出现 `ImportError`。对于这份数据，读取和处理也不一定需要 `pandas`。本地流水线使用 `openai`（连接 Ollama 的 OpenAI 兼容端点）、`pyyaml`、`requests` 和 `tqdm`；生成 HTML 报告时另需 `plotly`。
 
-**⑤ 评分正则的解析缺陷（影响判定正确性）**
+**⑤ 评分正则可能解析出错误类别**
 
 ```python
 # chinese_simpleqa_eval.py:121
@@ -125,14 +99,9 @@ match = re.search(r"(A|B|C)", grading_response)
 return match.group(0) if match else "C"
 ```
 
-两个问题：
+这里有两个风险：一是正则返回第一个匹配项；如果 Judge 的回复包含推理文本，取到的字母可能不是最终结论。二是正则也可能匹配英文单词中的字母，例如 `Correct` 中的 `C`。
 
-1. **取的是第一个匹配，而不是最后一个。** 当 Judge 的回复里含推理过程时，
-   会取到推理文本里先出现的字母，而不是最终结论。
-2. **字母会误匹配英文单词中的字符**（如 "Correct" 里的 `C`）。
-
-而本项目选定的 Judge 是思考模型 **DeepSeek-R1 14B**，其输出天然包含大段推理文本，
-这个正则几乎必然出错。本地重写为：
+本项目选用的 Judge 是思考模型 **DeepSeek-R1 14B**，输出可能包含较长的推理文本，因此本地版本调整为：
 
 ```python
 # 先剥离 <think>…</think> 思考块（含未闭合的截断情形）
@@ -140,13 +109,11 @@ return match.group(0) if match else "C"
 # 仅当剥离后无匹配时，才回退到全文匹配；最终兜底返回 C
 ```
 
-这是本地化过程中**唯一一处触及「评分正确性」而非「能否跑通」的改动**。
+在这些本地化调整中，这一项直接关系到评分结果；其他修改主要用于适配数据格式和运行环境。
 
-### 2.3 本地化的处置原则
+### 1.3 本地化的处理原则
 
-面对上述问题，有两条路：**改上游代码**，或者**只复用口径、重写执行链路**。
-
-选择后者，原则是：
+针对这些问题，可以直接修改上游脚本，也可以保留上游文件并单独实现本地执行流程。本项目采用第二种方式，具体处理如下：
 
 | 原则 | 具体做法 |
 |---|---|
@@ -155,11 +122,9 @@ return match.group(0) if match else "C"
 | 只在必要处重写 | 数据加载（CSV→JSONL）、字段映射、模型调用（云端→Ollama）、A/B/C 解析、断点续跑、结果落盘 |
 | 唯一的上游改动显式声明 | `common.py` 的 `map_with_progress` 默认 `num_threads` 由 `10` 调整为 `1`（本机并发压力）。该文件**不被本地流水线引用**，因此不影响本项目任何评测结果 |
 
-**为什么坚持不改上游**：一套评测要能被别人复核，就必须能分清
-「哪些是官方定义、哪些是我的实现」。上游文件原样保留，
-任何人都可以把它和重写版逐行对照，确认 A/B/C 口径没有被偷改。
+保留上游文件有助于区分官方定义与本项目的实现。复核者可以将两者进行对照，检查本地版本是否沿用了相同的 A/B/C 定义和指标计算方式。
 
-### 2.4 本地化后的运行链路
+### 1.4 本地运行流程
 
 ```text
 上游提供：data/chinese_simpleqa.jsonl（3000 题）+ A/B/C 评分口径与 F1 定义
@@ -174,22 +139,15 @@ return match.group(0) if match else "C"
 本项目新增：make_report.py → report.html（交互式图表）
 ```
 
-整条链路只依赖本机 Ollama 的 OpenAI 兼容端点，**运行时不需要任何外网访问**。
+这条流程通过本机 Ollama 的 OpenAI 兼容端点调用模型，评测运行期间不需要访问外网。
 
 ## 2 项目缘起
 
-最初的动机很朴素：想比较几个本地可部署的中文模型，在事实问答任务上到底差多少。
+项目最初是为了比较几个可在本机运行的中文模型在事实问答任务上的表现。早期尝试使用在线 API，但网络稳定性、代理和请求限流都会影响请求过程，使得测量结果难以单独反映模型表现。
 
-第一次尝试走的是在线 API 路线，很快遇到了问题：**网络稳定性、代理、请求限流都会污染测量结果**。
-同一条 prompt 在不同网络条件下重试，得到的分数可能漂移好几个百分点——这时候你测的到底是模型能力，
-还是网络质量？
+因此，我把模型推理、Judge、数据集和评测程序都迁移到本地运行。这样可以减少网络因素对实验的干扰，把分析重点放在模型输出和评分流程上。
 
-于是决定把整条链路搬到本机：**模型推理（Ollama）+ Judge + 数据集 + 评测程序**全部本地化。
-网络因素被彻底排除后，剩下的波动就只能来自模型本身和评测设计——这才是可控的实验。
-
-项目真正的转折点出现在 Judge 环节。最初的方案是用一个本地模型当裁判，后来人工抽查发现
-**这个裁判自己的判错率相当高**。从那一刻起，项目的重心从"比较模型分数"转向了
-**"先确认这把尺子准不准"**。
+人工抽查后，我发现本地 Judge 也会产生明显误判。项目的工作重点随之扩大：除了比较目标模型的分数，还需要先检查 Judge 的误判类型，并评估这些错误会怎样影响最终排名。
 
 ## 3 硬件与环境约束
 
@@ -201,27 +159,23 @@ return match.group(0) if match else "C"
 | OS | Windows 10 |
 | 推理后端 | Ollama（OpenAI 兼容 API，`http://localhost:11434/v1`） |
 
-16 GB 显存决定了模型选择的上限，也直接塑造了整个架构：**任何时刻只能有一个模型驻留显存**。
-这个约束不是缺陷，反而逼出了一套更干净的流水线设计。
+16 GB 显存限制了可同时驻留的模型规模。因此，目标模型与 Judge 分阶段运行，不会同时占用显存。
 
-### 2.1 上下文长度：一个被低估的陷阱
+### 3.1 上下文长度设置
 
-项目早期踩过一个坑：Ollama 默认上下文窗口很大（部分模型标签写着 131072），
-在 16 GB 卡上会导致 `llama-server` 占用飙升、部分层被挤到 CPU：
+项目早期使用过较大的默认上下文窗口（部分模型标签为 131072）。在 16 GB 显存下，这会显著增加运行时占用，并使部分模型层转移到 CPU：
 
 ```text
 deepseek-r1:14b   35 GB   60% CPU / 40% GPU   131072 context
 ```
 
-推理速度随之崩掉。把上下文固定到 **8192** 之后：
+推理速度因此下降。将上下文长度设为 **8192** 后，日志显示模型层可以全部卸载到 GPU：
 
 ```text
 100% GPU
 ```
 
-**关键认识：评测任务里每一道题都是独立请求，3000 道题不会累加进同一个上下文。**
-所以 128K 的窗口对一个"单题输入只有一两千字符"的 Judge 来说完全是浪费。
-这道优化后来直接决定了整个项目的可行性。
+本项目将每道题作为独立请求处理，3000 道题不会累积到同一个上下文中。因此，对于单题输入通常只有一两千字符的 Judge，128K 窗口并无实际必要。将上下文限制在 8K 后，显存占用和推理速度更适合当前硬件。
 
 实测确认（llama-server 日志）：
 
@@ -230,7 +184,7 @@ deepseek-r1:14b   35 GB   60% CPU / 40% GPU   131072 context
 llama_kv_cache: size = 448.00 MiB (8192 cells, 28 layers, 1/1 seqs)
 ```
 
-各模型的原生窗口上限也一并查清（决定了上下文能开多大）：
+各模型的原生上下文上限和 8K 设置下的实测显存占用如下：
 
 | 模型 | 原生上限 `n_ctx_train` | 8K 下实测显存 |
 |---|---|---|
@@ -241,7 +195,7 @@ llama_kv_cache: size = 448.00 MiB (8192 cells, 28 layers, 1/1 seqs)
 
 ## 4 评测架构
 
-### 3.1 两阶段流水线
+### 4.1 三阶段流水线
 
 ```text
 Phase 1  Predict（逐模型串行）
@@ -254,23 +208,18 @@ Phase 3  Aggregate
   读 reviews → 计算指标 → 输出 leaderboard CSV + HTML 报告
 ```
 
-### 3.2 四条设计约束
+### 4.2 设计约束
 
-1. **模型只加载一次。** 绝对不做"每题加载→回答→卸载"——3000 题那样跑会浪费掉绝大部分时间在权重加载上。
-2. **并发 = 1。** 16 GB 显存下串行调用，同时保证结果一致性。
-3. **Target 与 Judge 绝不同时驻留显存。**
-4. **逐条 JSONL 追加 + 立即 flush。** 任何时刻中断，已完成的题都不会丢。
+1. **每个阶段中，模型加载后连续处理该阶段的题目。** 不按题目反复加载和卸载权重，以减少额外开销。
+2. **并发数设为 1。** 在 16 GB 显存条件下串行调用模型。
+3. **Target 和 Judge 分开运行。** 两者不会同时驻留显存。
+4. **逐条写入 JSONL 并立即 flush。** 如果任务中断，已完成的记录仍会保存在文件中。
 
-### 3.3 断点续跑的语义
+### 4.3 断点续跑
 
-续跑按 `id` 去重：启动时读取已有 JSONL，已完成的题目直接跳过。
-这让长任务变得可以随时中断——关掉电脑、第二天接着跑，已判定的题不会重跑。
+续跑时，程序会读取已有 JSONL 并根据 `id` 跳过已完成的题目，因此任务中断后可以继续运行，而不必重复处理已有记录。
 
-> ⚠️ **这里有一个容易忽略的副作用**：正因为是"按 id 跳过"，如果目录里残留着
-> 早期小规模 smoke test 的判定文件，正式全量运行时那批题会被**静默跳过**，
-> 最终结果是"旧批次 + 新批次"的混合体，破坏批次一致性。
-> 本项目在正式运行前把 50 题的 smoke test 文件改名隔离（`.smoketest`），
-> 确保 3000 题全部由同一次运行产生。**这类问题不会报错，只会悄悄污染数据。**
+这种机制也有一个需要注意的情况：如果目录中残留早期 smoke test 的判定文件，正式运行时对应题目可能会被跳过，导致结果混合不同批次的数据。为避免这种情况，本项目在全量评测前将 50 题 smoke test 文件改名为 `.smoketest`，与正式结果分开保存。
 
 **输出命名**（不同 Judge / 不同 Prompt 的结果并存不覆盖）：
 
@@ -280,11 +229,11 @@ reviews/{target}__judged_by__{judge}__{prompt_version}.jsonl
 leaderboard__judge_{judge}__{prompt_version}.csv
 ```
 
-## 5 Judge 提示词工程 ⭐
+## 5 Judge 提示词与校准
 
-这是整个项目中**最能体现评测设计能力**的部分。
+人工复核发现的误判类型，为后续 Judge 提示词校准提供了依据。
 
-### 4.1 为什么需要自定义 Judge Prompt
+### 5.1 为什么检查 Judge Prompt
 
 官方 `chinese_simpleqa_eval.py` 的评分模板定义了 A/B/C 三档：
 
@@ -292,7 +241,7 @@ leaderboard__judge_{judge}__{prompt_version}.csv
 - **B = 错误**：包含与参考答案矛盾的事实陈述
 - **C = 未尝试**：没有给出答案，也没有矛盾陈述
 
-但直接用官方模板让本地 7B~27B 模型当裁判，会出现系统性问题：
+在 50 题样本上直接使用官方模板时，几个本地候选 Judge 表现出不同的误判倾向：
 
 | 候选 Judge | 偏差方向 | 典型误判 |
 |---|---|---|
@@ -301,13 +250,11 @@ leaderboard__judge_{judge}__{prompt_version}.csv
 | DeepSeek-R1 14B | 偏严（较轻） | 对"已答对但补充无关信息"的题判 B |
 | Bonsai 27B | **偏松 + C 滥用** | 答错 → 误判 C；提到关键词即判 A |
 
-**注意偏差方向的意义完全不同**：偏严会低估模型分数，偏松会虚高分数。
-如果一个 Judge 把所有"答错"都判成"未尝试"，那么一个胆小拒答的模型反而会得到漂亮分数——
-**这不是评测，这是被评测对象牵着走。**
+偏严和偏松对最终分数的影响不同：前者可能低估目标模型，后者则可能抬高分数。若 Judge 将错误答案判成“未尝试”，目标模型的错误就不会按预期计入评分，尤其可能影响拒答较多的模型。
 
-### 4.2 校准版 Prompt 的设计
+### 5.2 校准版 Prompt 的改动
 
-为此设计了一份边界规则显式化的校准版模板，核心改动：
+根据这些误判案例，我编写了一份将类别边界写得更明确的校准版模板，主要改动如下：
 
 1. **开头用英文显式声明 A/B/C 定义**（对 Bonsai 这类模型英文指令更稳定）
 2. **9 条 CRITICAL BOUNDARY RULES** 把边界写死，例如：
@@ -319,53 +266,49 @@ leaderboard__judge_{judge}__{prompt_version}.csv
 3. **单独一段 `KEY DISTINCTION: B vs C`**，明确"答错 ≠ 未尝试"
 4. **结尾强调只输出单个字母**，降低解析成本
 
-其中第 2 条里的规则 3/4/6/7 都是直接从**人工核验过的误判案例**反向提炼出来的——
-不是凭空设计的规则，而是"先发现错误模式，再写规则约束它"。这正是数据标注规范的实际工作方式。
+规则 3、4、6 和 7 均来自人工核验中出现过的具体误判。校准版试图把这些边界情况转成明确规则，再通过同一批样本检查修改是否有效。
 
-### 4.3 实现细节：模板单点定义
+### 5.3 模板集中定义
 
-为了避免两份 Prompt 副本漂移，校准版模板只在 `run_local_eval.py` 中定义一次，
-校准脚本通过 import 复用：
+校准版模板只在 `run_local_eval.py` 中定义，校准脚本通过 import 复用，以免两处副本出现差异：
 
 ```python
 from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_MESSAGE
 ```
 
-改 Prompt 只需改一处，两个脚本行为自动一致。
+修改 Prompt 时只需更新这一处定义，两个脚本便会使用同一模板。
 
-## 6 人工核验闭环 ⭐
+## 6 人工复核
 
-**Judge 说 A/B/C 不算数——必须有人去核对。**
+自动判定仍需人工抽查，尤其是不同 Judge 给出不同类别的题目。
 
-### 5.1 方法
+### 6.1 方法
 
-从 50 题 smoke test 中挑出 **4 个 Judge 判定分歧的 15 道题**，逐题人工判定真值。
+从 50 题 smoke test 中，选取四个候选 Judge 判定存在分歧的 15 道题，逐题人工核验。
 判定依据严格对齐官方口径：A = 含参考答案要点且无矛盾；B = 含矛盾陈述或给出不同实体/数值；C = 未答且无矛盾。
 
-### 5.2 一个必须诚实说明的过程
+### 6.2 争议题的事实核验
 
-**我最初的判断有 3 题是错的，是联网查证之后才纠正的。**
+人工判定中有 5 道题的答案事实需要外部确认，不能仅凭印象裁决。下表列出这些题目的最终真值与判定依据：
 
-| 题号 | 我的初判 | 核实后 | 依据 |
-|---|---|---|---|
-| #16 | B | B ✓ | 卢梭《论人类不平等的起源和基础》确是 **1755 年** 4 月初版于阿姆斯特丹；模型答"1754年"与参考答案矛盾 |
-| #20 | B | B ✓ | 1954 年被伊朗当局审判的是**伊朗人民党（图德党）**；模型给出"伊朗民族解放阵线"这一不同组织 |
-| #42 | — | B | 书目数据库存储的是**二次文献**；模型答"元数据"，给出了不同概念 |
-| #44 | B | B ✓ | 金斗瓮在广东、香港俗称**金塔**；模型答"猪笼草" |
-| #50 | B | B ✓ | 释行真确为少林寺**第三十二代**嫡传弟子；模型称其"并非少林寺嫡传弟子" |
+| 题号 | 核实后真值 | 依据 |
+|---|---|---|
+| #16 | B | 卢梭《论人类不平等的起源和基础》确为 **1755 年** 4 月初版于阿姆斯特丹；模型答"1754年"与参考答案矛盾 |
+| #20 | B | 1954 年被伊朗当局审判的是**伊朗人民党（图德党）**；模型给出"伊朗民族解放阵线"这一不同组织 |
+| #42 | B | 书目数据库存储的是**二次文献**；模型答"元数据"，给出了不同概念 |
+| #44 | B | 金斗瓮在广东、香港俗称**金塔**；模型答"猪笼草" |
+| #50 | B | 释行真确为少林寺**第三十二代**嫡传弟子；模型称其"并非少林寺嫡传弟子" |
 
 核实来源：[卢梭著作（百度百科）](https://baike.baidu.com/item/%E8%AE%BA%E4%BA%BA%E7%B1%BB%E4%B8%8D%E5%B9%B3%E7%AD%89%E7%9A%84%E8%B5%B7%E6%BA%90%E5%92%8C%E5%9F%BA%E7%A1%80/5880820) ·
 [金斗瓮（维基百科）](https://zh.wikipedia.org/zh-hans/%E9%87%91%E6%96%97%E7%94%95) ·
 [释行真（百度百科）](https://baike.baidu.com/item/%E9%87%8A%E8%A1%8C%E7%9C%9F/3793721) ·
 [伊朗人民党（维基百科）](https://zh.wikipedia.org/zh-hans/%E4%BC%8A%E6%9C%97%E4%BA%BA%E6%B0%91%E5%85%9A)
 
-**这件事的意义大于那几道题本身**：连人工标注者的判断都需要被外部事实源复核。
-一套只依赖"我觉得"的评测流程，本质上和被测模型一样不可靠。
-最终 15 题的真值表固化在 `analyze_calibration.py` 的 `HUMAN_GROUND_TRUTH` 中，可随时复现与增改。
+这 5 道题的真值均以外部资料为准，而非依据印象裁决。这也说明人工标注同样可能出错，对争议事实做外部核查是必要的。最终采用的 15 题真值表保存在 `analyze_calibration.py` 的 `HUMAN_GROUND_TRUTH` 中，便于检查和复现。
 
 ## 7 四个 Judge 的横向对比
 
-用**同一批 50 题、同一个目标模型（Qwen2.5 7B）**，让 4 个候选 Judge 分别判定：
+四个候选 Judge 使用同一批 50 题和同一个目标模型（Qwen2.5 7B）进行评分，结果如下：
 
 | Judge | A | B | C | 报告的 Correct% | 人工核验误判 |
 |---|---|---|---|---|---|
@@ -374,13 +317,11 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 | **DeepSeek-R1 14B** | 16 | 31 | 3 | 32.0% | **2 / 15（13.3%）** |
 | Bonsai 27B | 17 | 28 | 5 | 34.0% | **4 / 15（26.7%）** |
 
-注意 `Qwen2.5 7B` 的 C 是 **0** ——它在 50 题里一次都没判过"未尝试"，
-说明它对"拒答"这个类别的识别基本失效。而 R1-7B 报出的 40% 是三家里最高的，
-但人工核对发现这个数字被"答错判成 A"的偏差抬高了。
+Qwen2.5 7B 在这 50 题中一次也没有使用 C 类，表明它未能正确识别样本中的未尝试回答。DeepSeek-R1 7B 的 Correct% 最高，但人工复核发现，它把部分错误答案判成 A，因此这个比例不能单独作为 Judge 可靠性的依据。
 
-> **最重要的结论不是谁报的百分比最高，而是：Judge 自身的误判模式，比它报告的分数更重要。**
+这些结果表明，比较候选 Judge 时，除了它报告的分数，还需要检查各类误判的频率和方向。
 
-### 6.1 速度也是决策变量
+### 7.1 推理速度
 
 | Judge | 单题耗时 | 9000 条预计 |
 |---|---|---|
@@ -389,29 +330,23 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 | **DeepSeek-R1 14B** | **~3.2 s** | **~8 h** |
 | Bonsai 27B | ~10 s | ~25 h |
 
-最终选择 **DeepSeek-R1 14B** 的三条理由：
+全量评测最终采用 **DeepSeek-R1 14B**，主要考虑以下因素：
 
-1. **准确率**：人工核验题上误判 2/15，优于 Bonsai 的 4/15（原版）
-2. **速度**：比 Bonsai **快约 3 倍**（9000 条：约 8 小时 vs 约 25 小时）
-3. **偏差方向更安全**：它是"偏严"（可能低估分数），而 Bonsai 是"偏松"（虚高分数）。
-   在评测里，**虚高比低估更危险**——它会把不存在的能力写进结论。
+1. **人工复核结果**：在 15 道核验题中，原版 DeepSeek-R1 14B 误判 2 题，Bonsai 27B 误判 4 题。
+2. **运行时间**：完成 9000 条判定预计需要约 8 小时，Bonsai 约需 25 小时。
+3. **误判倾向**：R1-14B 略偏严，可能低估目标模型的分数；Bonsai 的偏松问题则可能抬高分数。对于本次比较，后者更容易直接影响模型排名的解释。
 
-## 8 校准实验：一个诚实的负结果
+## 8 校准实验
 
-### 7.1 实验设计
+### 8.1 实验问题
 
-**要回答的问题**：剩下那些误判，是 **Prompt 表述模糊**导致的，还是 **模型能力上限**导致的？
+实验要区分剩余误判主要来自 Prompt 边界不够明确，还是来自 Judge 本身的判别能力。如果问题主要在提示词，继续调整模板可能有帮助；如果来自模型本身，则需要考虑更换 Judge，或在结果中记录其偏差。
 
-这个问题直接决定下一步该做什么：
-- 如果是 Prompt 问题 → 继续优化 Prompt
-- 如果是能力上限 → 换 Judge，或接受并记录偏差
+### 8.2 实验方法
 
-### 7.2 做法
+使用第 5 节介绍的校准版 Prompt，重新评测 **DeepSeek-R1 14B** 和 **Bonsai 27B** 在同一批 50 题上的表现，再逐题比较新旧结果。
 
-用第 4 节设计的校准版 Prompt，把 **DeepSeek-R1 14B** 和 **Bonsai 27B** 在同一批 50 题上重跑一遍，
-再与各自的原版结果逐题对比。
-
-### 7.3 结果
+### 8.3 结果
 
 | Judge | 原版 Prompt | 校准版 Prompt | 变化 |
 |---|---|---|---|
@@ -428,25 +363,18 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 | Bonsai `#47` | B → C | ✅ **修正**：拒答被正确归为 C |
 | Bonsai `#2` | A → A | ❌ 仍误判：答"社会民主主义"被当成"社会主义" |
 
-### 7.4 结论
+### 8.4 结果解读
 
-1. **对 DeepSeek-R1 14B，校准版 Prompt 净收益为 0。**
-   它修好了 `#27`，却又弄坏了 `#5`。这说明其残留误判来自
-   **模型能力上限，而不是 Prompt 表述模糊**。
-   因此正式评测**采用官方模板**，保持与官方口径一致。
-2. **校准版 Prompt 确实治好了 Bonsai 的"C 滥用 / 把拒答判成 B"**（`#42`、`#47`），
-   证明**提示词修改是有效的**——但它的偏松问题（`#2`）仍然存在，那是模型级问题，Prompt 解决不了。
-   所以 Bonsai 只保留为对照 Judge。
+1. **DeepSeek-R1 14B 的总误判数没有变化。** 校准版修正了 `#27`，但在 `#5` 引入了新的误判。根据这组样本，继续强化边界规则并未改善其总体结果，因此正式评测仍使用官方模板，以保持与官方评分口径一致。
+2. **Bonsai 27B 在部分边界案例上有所改善。** 校准版将 `#42` 从 C 改为 B，也将 `#47` 的拒答正确判为 C；不过，`#2` 仍然误判，说明仅靠这次 Prompt 修改无法消除它的偏松倾向。因此，Bonsai 仍作为对照 Judge，而不用于正式全量评分。
 
-> 这个"没提升"的结果本身就是有价值的产出：
-> **它把"继续调 Prompt"这条死路提前排除掉了，避免了在正式评测上浪费时间。**
-> 评测设计的一部分工作，就是证明某条路走不通。
+这次实验没有改善正式 Judge 的总体表现，但帮助确认了提示词调整的效果有限，也为保留官方模板提供了依据。
 
 ## 9 全量评测结果
 
 **规模**：3 个目标模型 × 3000 题 = **9000 条判定**，全部由同一个 Judge 完成。
 
-### 8.1 总体指标
+### 9.1 总体指标
 
 | # | 模型 | 架构范式 | A 正确 | B 错误 | C 未尝试 | Correct% | Acc(已作答) | **F1** | 95% CI |
 |---|---|---|---|---|---|---|---|---|---|
@@ -459,7 +387,7 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 > `F1 = 2 × Acc(已作答) × Correct% / (Acc(已作答) + Correct%)`。
 > 以 **F1** 为主指标，因为它同时惩罚"答错"和"大量拒答"。
 
-### 8.2 分类别表现（Correct%）
+### 9.2 分类别表现（Correct%）
 
 | 类别 | n | DeepSeek-V2 16B | Qwen2.5 7B | DeepSeek-R1 7B |
 |---|---|---|---|---|
@@ -470,27 +398,22 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 | 社会 | 453 | **35.10%** | 34.44% | 9.49% |
 | 生活、艺术与文化 | 601 | **30.28%** | 20.30% | 3.83% |
 
-### 8.3 四个值得注意的发现
+### 9.3 结果中的几个现象
 
-**① 参数量不是唯一变量。**
-DeepSeek-V2 16B 是 MoE 架构（激活参数远小于 16B），却全面领先 Dense 的 Qwen2.5 7B。
-差距在**中华文化**类别最大：44.79% vs 28.83%（**+16 个百分点**）。
-这说明在中文文化知识这个维度上，架构与训练数据的差异比单纯参数量更重要。
+**① 参数规模不能单独解释结果。**
+MoE 架构的 DeepSeek-V2 16B 在总体 F1 和各类别表现上领先于 Dense 的 Qwen2.5 7B。两者在**中华文化**类别的差距最大，为 44.79% 对 28.83%（约 16 个百分点）。这表明，在中文文化知识这一类别中，单看参数量不足以解释模型间的差距，架构和训练数据的差异也值得考虑。
 
-**② 思考模型在这个任务上明显吃亏——但原因不是"更笨"。**
-DeepSeek-R1 7B 的拒答率高达 **22.2%**（667 题），而 Qwen2.5 7B 只有 **7.5%**（224 题），**相差 3 倍**。
-翻看它的 C 类输出，大量是：
+**② DeepSeek-R1 7B 的拒答比例较高。**
+DeepSeek-R1 7B 有 **22.2%** 的题目被判为拒答（667 题），而 Qwen2.5 7B 为 **7.5%**（224 题），前者约为后者的 3 倍。检查 C 类输出时，可以看到不少回答采用类似下面的拒答表述：
 
 ```text
 对不起，我还没有学会回答这个问题。如果你有其他问题，我非常乐意为你提供帮助。
 ```
 
-而 ChineseSimpleQA 是**事实型短答案**任务——拒答就直接丢分。
-**它的知识广度未必输，输在作答策略过于保守。**
-这个发现对实际应用有直接意义：评估一个模型能不能用，不能只看它在"敢答的题"上答得多准。
+ChineseSimpleQA 主要评估事实型短答案，未作答会降低 Correct% 和 F1。因而，这里的低分至少部分反映了模型较保守的作答策略；仅凭这组结果，还不能把差距完全归因于知识覆盖面。实际使用时，也需要同时考虑模型答对的比例和拒答频率。
 
-**③ 模型间知识高度互补。**
-三个模型 A/B/C 判定的一致率最低只有 **47.5%**：
+**③ 三个模型的判定存在较大差异。**
+三个模型的 A/B/C 判定一致率最低为 **47.5%**：
 
 | 一致率 | R1 7B | V2 16B | Qwen 7B |
 |---|---|---|---|
@@ -498,7 +421,7 @@ DeepSeek-R1 7B 的拒答率高达 **22.2%**（667 题），而 Qwen2.5 7B 只有
 | DeepSeek-V2 16B | 47.53% | 100% | 61.97% |
 | Qwen2.5 7B | 52.90% | 61.97% | 100% |
 
-"只有某一个模型答对"的题目数量：
+各模型单独答对、而另外两个模型没有答对的题目数量如下：
 
 | 模型 | 独有答对 |
 |---|---|
@@ -506,8 +429,8 @@ DeepSeek-R1 7B 的拒答率高达 **22.2%**（667 题），而 Qwen2.5 7B 只有
 | Qwen2.5 7B | 268 题 |
 | DeepSeek-R1 7B | 47 题 |
 
-**④ 题目本身很难。**
-答对题数的分布：
+**④ 三个模型同时答对的题目较少。**
+按答对模型数量统计，分布如下：
 
 | 答对模型数 | 题数 | 占比 |
 |---|---|---|
@@ -516,13 +439,11 @@ DeepSeek-R1 7B 的拒答率高达 **22.2%**（667 题），而 Qwen2.5 7B 只有
 | 2 / 3 | 583 | 19.43% |
 | 3 / 3（三个全对） | 167 | 5.57% |
 
-**超过一半的题目三个模型全部答错**，只有 5.57% 是三者都会。
-ChineseSimpleQA 对本地中小规模模型而言是一个相当困难的基准。
+三个模型在 1,526 道题上均未答对，占总题数的 50.87%；三者都答对的题目只有 167 道，占 5.57%。在本次实验所用的本地中小规模模型中，ChineseSimpleQA 的区分难度较高。
 
-## 10 结果可信度的方法学工作
+## 10 结果检查与局限
 
-一个评测报告的分数如果不说明"这些数字可能错在哪"，那它的价值是有限的。
-本项目做了以下几项检查：
+除汇总分数外，本项目还检查了数据完整性、输出截断、上下文使用情况、统计不确定性和批次一致性，结果如下：
 
 | 检查项 | 做法 | 结果 |
 |---|---|---|
@@ -533,30 +454,22 @@ ChineseSimpleQA 对本地中小规模模型而言是一个相当困难的基准�
 | **统计不确定性** | 用 Wilson 区间给出 95% 置信区间 | ✅ 约 ±1~2 个百分点 |
 | **批次一致性** | 隔离 smoke test 文件，避免 id 去重导致混批 | ✅ 全量由同一次运行产生 |
 
-### 9.1 必须声明的局限
+### 10.1 局限
 
-> ⚠️ **Judge 本身不完美。** 经人工核验，选定的 DeepSeek-R1 14B 在 15 题样本上准确率约 **87%**。
-> 因此：
-> - **各模型之间的相对排名是可信的**（同一把尺子量所有人）
-> - **但绝对分数存在约 ±1~2 个百分点的系统性偏差**
-> - **不同 Judge 下的绝对分数不可直接混用**
+> ⚠️ **Judge 仍存在误差。** 在人工核验的 15 道样本中，DeepSeek-R1 14B 的准确率约为 **87%**。因此，模型间的相对排序可用于本次同条件比较，但绝对分数仍可能受到 Judge 误判影响；不同 Judge 得出的绝对分数也不应直接混用。
 >
-> ⚠️ **绝对分数偏低是正常的。** 这类基准的公开成绩通常来自 GPT-4 级别的闭源模型。
-> 本地 7B~16B 模型拿到 30%~40% 属于合理区间，**不应与其他报告的绝对值并列比较**。
-
-**主动写出这些限制，比隐藏它们更能体现评测工作的专业性。**
-一个知道"自己的数字什么时候不能信"的人，才是能设计出可信评测的人。
+> ⚠️ **本次分数不宜与其他报告直接横向比较。** 本地 7B–16B 模型在本次测试中的 F1 约为 11%–40%。其他报告可能使用不同的模型、Judge 或评测设置，分数差异不一定只来自目标模型本身。
 
 ## 11 小结
 
-这个项目表面上产出的是三个模型的分数，实际上建立的是**一套判断"评测结果可不可信"的工作方法**：
+本项目的主要产出包括三个目标模型的评测结果，以及一组用于检查评分可靠性的记录：
 
-1. **先校准尺子，再量东西。** Judge 的偏差方向必须先查清，否则测出来的分数没有意义。
-2. **提示词修改要有因果证据。** 不是"我优化了 prompt"，而是"改前误判 4/15，改后 3/15，具体是哪几题变了、为什么变"。
-3. **人工标注必须被外部事实源复核。** 我自己最初也判错了 3 题。
-4. **负结果要如实记录。** 校准版 Prompt 对选定的 Judge 没有净提升——这个结论避免了后续无效投入。
-5. **主动披露局限。** 说明 Judge 准确率约 87%、绝对分数有系统偏差，比给一个漂亮数字更重要。
-6. **原始数据必须留全。** 9000 条判定逐条可查，任何人都能复核任意一题的判定依据。
+1. 在正式比较模型前，先用人工核验样本检查 Judge 的误判类型和偏差方向。
+2. 对 Prompt 的调整逐题比较，并记录误判数和发生变化的具体题目，而不只报告总体比例。
+3. 将人工判定与外部事实来源进行核对，并把核实来源一并记录。
+4. 如实报告校准实验的结果。校准版 Prompt 没有减少 DeepSeek-R1 14B 的总体误判数，因此全量评测继续使用官方模板。
+5. 说明 Judge 在核验样本上的表现及其可能对分数造成的影响。
+6. 保留 9,000 条预测和判定记录，方便逐题复查。
 
 ---
 
