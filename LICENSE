@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 zhou9 (GitHub: cdutfvyhgibuh)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 第三方内容说明 / Third-party notice
+
+本仓库包含或衍生自以下第三方项目，其版权归原作者所有：
+
+### ChineseSimpleQA
+
+- 来源: https://github.com/LivingFutureLab/ChineseSimpleQA
+- 许可: MIT License, Copyright (c) 2024 OpenAI
+- 本仓库中使用的内容:
+  - `data/chinese_simpleqa.jsonl` —— 评测数据集（3000 题），原样使用
+  - A/B/C 评分口径与 `GRADER_TEMPLATE` —— 在 `run_local_eval.py` 中独立复现，未修改上游文件
+  - `common.py` 的 `map_with_progress` —— 默认 `num_threads` 由 `10` 调整为 `1`
+
+上述第三方内容遵循其原始 MIT 许可。本仓库的 MIT 许可仅适用于本项目原创部分
+（本地评测流水线、Judge 校准框架、校准版 Prompt、人工核验与报告生成脚本）。

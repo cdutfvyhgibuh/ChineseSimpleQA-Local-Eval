@@ -1,6 +1,6 @@
-# ChineseSimpleQA 本地大模型评测实践
+# ChineseSimpleQA-Local-Eval
 
-> **一个完全本地的中文事实问答评测项目：从"比谁分高"到"确认分数可不可信"**
+> **完全本地的中文事实问答评测实践：从"比谁分高"到"确认分数可不可信"**
 >
 > 在单张 RTX 5080 16GB 上，用 Ollama 部署 3 个不同架构的中文大模型，
 > 固定同一套经过人工校准的本地 Judge，完成 3000 题 × 3 模型的统一评测，
@@ -560,7 +560,7 @@ ChineseSimpleQA 对本地中小规模模型而言是一个相当困难的基准�
 ## 附录 A 仓库结构
 
 ```text
-chinese-simpleqa-eval/
+ChineseSimpleQA-Local-Eval/
 ├── run_local_eval.py            # 主流水线（predict / judge / aggregate）
 ├── run_judge_calibration.py     # Judge 校准实验
 ├── analyze_calibration.py       # 校准结果分析（含人工核验真值表）
