@@ -1,0 +1,9 @@
+# 统一换行符，避免 Windows/Linux 协作时产生全文 diff
+* text=auto eol=lf
+
+# 二进制/大文件不做换行转换
+*.png binary
+*.jpg binary
+*.jsonl -text
+*.csv -text
+*.html -text

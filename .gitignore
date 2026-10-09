@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 运行期日志与临时产物
+*.log
+judge_resume.log
+
+# 早期 smoke test 的隔离文件（保留在本地，不入库）
+*.smoketest
+
+# 上游仓库自带、与本地评测流程无关的大文件
+outputs/20260909_*/
+outputs/20260914_*/
+image/

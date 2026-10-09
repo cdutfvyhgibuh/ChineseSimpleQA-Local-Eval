@@ -1,0 +1,68 @@
+# ChineseSimpleQA 本地评测配置
+# 使用方式: python run_local_eval.py --config config_local.yaml
+
+ollama_base_url: http://localhost:11434/v1
+
+# Target 模型（按顺序逐个加载，跑完卸载再跑下一个）
+# 2026 定稿：三个模型，覆盖三种范式
+#   qwen2.5:7b        Dense + Instruct（普通快速回答基准）
+#   deepseek-r1:7b    Reasoning（思考模型）
+#   deepseek-v2:16b   MoE（大参数总量 + 小激活参数）
+# 已移除 phi4-mini:latest（弃用；其 35 题半成品预测已移出，见 notes）
+target_models:
+  - qwen2.5:7b
+  - deepseek-r1:7b
+  - deepseek-v2:16b
+
+# Judge 模型（主 Judge + 对照 Judge）
+# 【2026 校准实验结论】primary 已定为 deepseek-r1:14b
+#   依据：人工核验 15 题上 R1:14b 误判 2 题（13.3%），bonsai 原版 4 题 / 校准版 3 题；
+#         且 R1:14b 快 2.7 倍（50 题 2.5min vs 6.7min），误差偏"严"而非偏"松"。
+#   详见 HANDOVER.md「校准实验最终结论」一节。
+judge:
+  primary: deepseek-r1:14b
+  # 对照 Judge（不建议作为正式 Judge：对答错的题目偏"松"，会虚高所有模型分数）
+  fallback: MichelRosselli/bonsai-27b
+  # 运行时通过 --judge 切换，默认 primary
+  # R1 是思考模型，输出含 <think> 块，max_tokens 需给足
+  temperature: 0.0
+  max_tokens: 4096
+  # 评分模板版本：
+  #   official   = 官方中文模板（默认；与已发布的 evalscope 结果口径一致）
+  #   calibrated = 校准版英文模板（显著修复 bonsai 的 C 滥用，但对 R1:14b 无净提升）
+  # 可用 --prompt-version 临时覆盖。结果文件名会带 __official / __calibrated 后缀。
+  prompt_version: official
+
+# 生成参数
+generation:
+  temperature: 0.0
+  max_tokens: 2048
+  # deepseek-r1 思考链长，单独覆盖
+  per_model_overrides:
+    deepseek-r1:7b:
+      max_tokens: 4096
+      temperature: 0.6
+
+# 数据集
+dataset:
+  path: data/chinese_simpleqa.jsonl
+  limit: null  # null=全量3000, 数字=抽样(固定seed=42)
+
+# 输出
+output_dir: ./outputs/local_eval
+
+# 并发（设为1，串行调用，避免VRAM压力）
+concurrency: 1
+
+# Ollama 推理选项（限制上下文窗口，默认131072会吃满内存）
+ollama_options:
+  num_ctx: 8192
+
+# 超时（秒）
+timeout:
+  predict: 180
+  judge: 300
+
+# 重试
+max_retries: 3
+retry_backoff: 5
