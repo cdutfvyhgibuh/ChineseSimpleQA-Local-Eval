@@ -31,7 +31,149 @@ judgment-agreement was only 47.5% — evidence of strong knowledge complementari
 
 ---
 
-## 1 项目缘起
+## 1 上游项目本地化：把官方评测搬到本机
+
+本项目的数据集与评分口径来自开源项目 **[LivingFutureLab/ChineseSimpleQA](https://github.com/LivingFutureLab/ChineseSimpleQA)**。
+但在本机真正跑起来之前，上游代码有若干处**无法直接复用**。这一节记录逐项定位与处置过程——
+它本身也是本项目工作量的一部分。
+
+### 2.1 上游提供的三条评测路径，都依赖外部条件
+
+上游 README 给出三种评测方式：
+
+| 路径 | 依赖 | 本地化障碍 |
+|---|---|---|
+| `simple-evals` 框架（`python -m simple-evals.demo`） | OpenAI 云端 API | 需联网 + API Key，与本项目「排除网络变量」的目标冲突 |
+| 独立脚本 `scripts/chinese_simpleqa_easy.py`（运行入口 `judge/chinese_simpleqa_easy.py`） | 需在源码里硬编码 `OPENAI_API_KEY` / `OPENAI_BASE_URL` | 评测逻辑与云端客户端耦合 |
+| OpenCompass 框架 | `git clone open-compass` + 按其 config 配置模型 | 框架重、模型接入方式受限，不适合 Ollama 直连 |
+
+三条路径的共同点是：**评测程序、推理后端、数据格式三者被绑定在一起**，
+并不存在一个「自带模型回答」的本地入口。
+所以本项目的做法是：**只复用数据集与 A/B/C 评分口径，评测执行链路自己重写**。
+
+### 2.2 五处真实的「水土不服」（逐项查证）
+
+以下问题都是逐行读上游代码定位出来的，不是猜测。
+
+**① 数据格式不匹配** —— 上游读 CSV，本项目用 JSONL
+
+```python
+# chinese_simpleqa_eval.py:99
+df = pandas.read_csv('chinese_simpleqa.csv')
+```
+
+- **硬编码相对路径**：依赖「当前工作目录下正好有个叫 `chinese_simpleqa.csv` 的文件」
+- **格式不一致**：本项目使用的是 `data/chinese_simpleqa.jsonl`
+
+**② 字段名不匹配（最隐蔽，会让评测「跑得通但全错」）**
+
+上游代码读取的字段名是 `problem`：
+
+```python
+# chinese_simpleqa_eval.py:128
+sampler._pack_message(content=row.get("problem", ""), role="user")
+```
+
+而数据集实际字段是：
+
+```json
+{"id": "...", "primary_category": "中华文化", "secondary_category": "中医",
+ "question": "...", "answer": "...", "urls": "..."}
+```
+
+**数据里根本没有 `problem` 字段。** 而 `row.get("problem", "")` 带了默认值，
+于是它**不会报错，只会安静地取到空字符串** —— 结果是拿空问题去问模型、
+再拿空回答去评分。**评测会正常跑完，并输出一份完全无意义的分数。**
+
+> 这是整个本地化过程中最值得记录的一处：**它不崩、不报错、不告警，只是安静地给出错误结论。**
+> 重写时把字段名统一为 `question`，并对每条记录做 id 与数据集的集合一致性校验
+> （见第 10 节），从机制上堵住这类「静默错误」。
+
+**③ 相对导入与包结构**
+
+```python
+# chinese_simpleqa_eval.py:5-6
+from . import common
+from .types_local import Eval, EvalResult, SamplerBase, SingleEvalResult
+```
+
+`from . import ...` 是**包内相对导入**，意味着该文件必须作为某个包的一部分被导入，
+不能直接 `python chinese_simpleqa_eval.py` 运行。
+本地重写时改为同级模块直接 `import`，不依赖包结构。
+
+**④ 多余的重量级依赖**
+
+```python
+# chinese_simpleqa_eval.py:3-4
+import blobfile as bf
+import pandas
+```
+
+`blobfile` 是面向云端对象存储的库，本地评测完全用不到——实测本环境**并未安装**它
+（`ImportError`）。`pandas` 对这个规模的数据也非必需。
+本地重写只依赖 `openai`（指向 Ollama 的 OpenAI 兼容端点）、`pyyaml`、`requests`、`tqdm`，
+HTML 报告额外用 `plotly`。
+
+**⑤ 评分正则的解析缺陷（影响判定正确性）**
+
+```python
+# chinese_simpleqa_eval.py:121
+match = re.search(r"(A|B|C)", grading_response)
+return match.group(0) if match else "C"
+```
+
+两个问题：
+
+1. **取的是第一个匹配，而不是最后一个。** 当 Judge 的回复里含推理过程时，
+   会取到推理文本里先出现的字母，而不是最终结论。
+2. **字母会误匹配英文单词中的字符**（如 "Correct" 里的 `C`）。
+
+而本项目选定的 Judge 是思考模型 **DeepSeek-R1 14B**，其输出天然包含大段推理文本，
+这个正则几乎必然出错。本地重写为：
+
+```python
+# 先剥离 <think>…</think> 思考块（含未闭合的截断情形）
+# 再取最后一个独立的 \b[ABC]\b 匹配
+# 仅当剥离后无匹配时，才回退到全文匹配；最终兜底返回 C
+```
+
+这是本地化过程中**唯一一处触及「评分正确性」而非「能否跑通」的改动**。
+
+### 2.3 本地化的处置原则
+
+面对上述问题，有两条路：**改上游代码**，或者**只复用口径、重写执行链路**。
+
+选择后者，原则是：
+
+| 原则 | 具体做法 |
+|---|---|
+| 上游文件保持可对照 | `chinese_simpleqa_eval.py`、`simpleqa_eval.py`、`judge/`、`sampler/` 均不改动，作为口径的权威参照 |
+| 评分定义以官方为准 | A/B/C 的定义、数值精度规则、异体字规则、F1 计算公式，全部照搬官方 `GRADER_TEMPLATE` 与官方聚合逻辑 |
+| 只在必要处重写 | 数据加载（CSV→JSONL）、字段映射、模型调用（云端→Ollama）、A/B/C 解析、断点续跑、结果落盘 |
+| 唯一的上游改动显式声明 | `common.py` 的 `map_with_progress` 默认 `num_threads` 由 `10` 调整为 `1`（本机并发压力）。该文件**不被本地流水线引用**，因此不影响本项目任何评测结果 |
+
+**为什么坚持不改上游**：一套评测要能被别人复核，就必须能分清
+「哪些是官方定义、哪些是我的实现」。上游文件原样保留，
+任何人都可以把它和重写版逐行对照，确认 A/B/C 口径没有被偷改。
+
+### 2.4 本地化后的运行链路
+
+```text
+上游提供：data/chinese_simpleqa.jsonl（3000 题）+ A/B/C 评分口径与 F1 定义
+                    │
+                    ▼
+本项目新增：run_local_eval.py
+    Phase 1  Predict   Ollama 逐个加载目标模型 → 3000 题 → predictions/{model}.jsonl
+    Phase 2  Judge     加载 Judge 模型 → 逐条判定 → reviews/{model}__judged_by__{judge}.jsonl
+    Phase 3  Aggregate 按官方口径聚合 → leaderboard CSV
+                    │
+                    ▼
+本项目新增：make_report.py → report.html（交互式图表）
+```
+
+整条链路只依赖本机 Ollama 的 OpenAI 兼容端点，**运行时不需要任何外网访问**。
+
+## 2 项目缘起
 
 最初的动机很朴素：想比较几个本地可部署的中文模型，在事实问答任务上到底差多少。
 
@@ -46,7 +188,7 @@ judgment-agreement was only 47.5% — evidence of strong knowledge complementari
 **这个裁判自己的判错率相当高**。从那一刻起，项目的重心从"比较模型分数"转向了
 **"先确认这把尺子准不准"**。
 
-## 2 硬件与环境约束
+## 3 硬件与环境约束
 
 | 项 | 配置 |
 |---|---|
@@ -94,7 +236,7 @@ llama_kv_cache: size = 448.00 MiB (8192 cells, 28 layers, 1/1 seqs)
 | DeepSeek-R1 14B（Judge） | 131,072 | **9,922 MiB** |
 | Bonsai 27B（对照 Judge） | 262,144 | 4,367 MiB |
 
-## 3 评测架构
+## 4 评测架构
 
 ### 3.1 两阶段流水线
 
@@ -135,7 +277,7 @@ reviews/{target}__judged_by__{judge}__{prompt_version}.jsonl
 leaderboard__judge_{judge}__{prompt_version}.csv
 ```
 
-## 4 Judge 提示词工程 ⭐
+## 5 Judge 提示词工程 ⭐
 
 这是整个项目中**最能体现评测设计能力**的部分。
 
@@ -188,7 +330,7 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 
 改 Prompt 只需改一处，两个脚本行为自动一致。
 
-## 5 人工核验闭环 ⭐
+## 6 人工核验闭环 ⭐
 
 **Judge 说 A/B/C 不算数——必须有人去核对。**
 
@@ -218,7 +360,7 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 一套只依赖"我觉得"的评测流程，本质上和被测模型一样不可靠。
 最终 15 题的真值表固化在 `analyze_calibration.py` 的 `HUMAN_GROUND_TRUTH` 中，可随时复现与增改。
 
-## 6 四个 Judge 的横向对比
+## 7 四个 Judge 的横向对比
 
 用**同一批 50 题、同一个目标模型（Qwen2.5 7B）**，让 4 个候选 Judge 分别判定：
 
@@ -251,7 +393,7 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 3. **偏差方向更安全**：它是"偏严"（可能低估分数），而 Bonsai 是"偏松"（虚高分数）。
    在评测里，**虚高比低估更危险**——它会把不存在的能力写进结论。
 
-## 7 校准实验：一个诚实的负结果
+## 8 校准实验：一个诚实的负结果
 
 ### 7.1 实验设计
 
@@ -297,7 +439,7 @@ from run_local_eval import CALIBRATED_GRADER_TEMPLATE, CALIBRATED_JUDGE_SYSTEM_M
 > **它把"继续调 Prompt"这条死路提前排除掉了，避免了在正式评测上浪费时间。**
 > 评测设计的一部分工作，就是证明某条路走不通。
 
-## 8 全量评测结果
+## 9 全量评测结果
 
 **规模**：3 个目标模型 × 3000 题 = **9000 条判定**，全部由同一个 Judge 完成。
 
@@ -374,7 +516,7 @@ DeepSeek-R1 7B 的拒答率高达 **22.2%**（667 题），而 Qwen2.5 7B 只有
 **超过一半的题目三个模型全部答错**，只有 5.57% 是三者都会。
 ChineseSimpleQA 对本地中小规模模型而言是一个相当困难的基准。
 
-## 9 结果可信度的方法学工作
+## 10 结果可信度的方法学工作
 
 一个评测报告的分数如果不说明"这些数字可能错在哪"，那它的价值是有限的。
 本项目做了以下几项检查：
@@ -402,7 +544,7 @@ ChineseSimpleQA 对本地中小规模模型而言是一个相当困难的基准�
 **主动写出这些限制，比隐藏它们更能体现评测工作的专业性。**
 一个知道"自己的数字什么时候不能信"的人，才是能设计出可信评测的人。
 
-## 10 小结
+## 11 小结
 
 这个项目表面上产出的是三个模型的分数，实际上建立的是**一套判断"评测结果可不可信"的工作方法**：
 

@@ -1,0 +1,23 @@
+# ChineseSimpleQA 本地评测 — 运行依赖
+#
+# 环境：Python 3.11（实测 3.11.15）
+# 安装：pip install -r requirements.txt
+#
+# 说明：
+#   * 上游 chinese_simpleqa_eval.py 依赖的 blobfile（云端对象存储库）本地用不到，
+#     本项目不依赖它；pandas 亦非必需，此处仅为方便对照上游代码而保留。
+#   * 推理通过本机 Ollama 的 OpenAI 兼容端点完成，不需要任何云端 API Key。
+
+# --- 评测流水线必需 ---
+openai>=2.0            # 指向 Ollama 的 OpenAI 兼容端点 (http://localhost:11434/v1)
+PyYAML>=6.0            # 读取 config_local.yaml
+requests>=2.31         # Ollama 原生 API（模型卸载 / 连通性检查）
+tqdm>=4.66             # 进度条
+
+# --- 报告生成 ---
+plotly>=6.0            # report.html 交互图表
+
+# --- 可选：仅在使用上游 official 脚本做对照时需要 ---
+pandas>=2.0
+numpy>=1.26
+jinja2>=3.1
