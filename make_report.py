@@ -23,8 +23,23 @@ from pathlib import Path
 import plotly.graph_objects as go
 import plotly.io as pio
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-OUT_ROOT = PROJECT_ROOT / "outputs" / "local_eval"
+# 本脚本所在目录：发布仓库根（docs/ 与代码都在这里）
+REPO_ROOT = Path(__file__).resolve().parent
+
+# 评测数据目录：默认取本仓库内的 data/ 与 results/（clone 后即可直接跑）。
+# 训练/评测现场也可以把数据放在仓库外，用环境变量 CSQA_DATA_ROOT 指定：
+#   CSQA_DATA_ROOT=C:\Users\zhou9\ChineseSimpleQA    （该目录下应有 data/ 与 outputs/local_eval/）
+_env_data = os.environ.get("CSQA_DATA_ROOT")
+DATA_ROOT = Path(_env_data).resolve() if _env_data else REPO_ROOT
+
+# 支持两种布局：
+#   A) 仓库内自带数据：<repo>/data/ 与 <repo>/results/
+#   B) 原始现场布局：  <root>/data/ 与 <root>/outputs/local_eval/
+if (DATA_ROOT / "results").is_dir():
+    OUT_ROOT = DATA_ROOT / "results"
+else:
+    OUT_ROOT = DATA_ROOT / "outputs" / "local_eval"
+DATA_DIR = DATA_ROOT / "data"
 
 # 模型展示名（把文件名还原成可读名字，并标注范式）
 MODEL_META = {
@@ -89,7 +104,7 @@ def load_jsonl(path):
 # ============================================================
 
 def collect(judge, prompt_version):
-    dataset = load_jsonl(PROJECT_ROOT / "data" / "chinese_simpleqa.jsonl")
+    dataset = load_jsonl(DATA_DIR / "chinese_simpleqa.jsonl")
     meta = {d["id"]: d for d in dataset}
 
     judge_safe = judge.replace(":", "_").replace("/", "_")
@@ -628,6 +643,8 @@ def main():
     ap.add_argument("--judge", default="deepseek-r1:14b")
     ap.add_argument("--prompt-version", default="official")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--no-pages", action="store_true",
+                    help="不生成 docs/index.html（跳过 GitHub Pages 入口同步）")
     args = ap.parse_args()
 
     dataset, meta, results = collect(args.judge, args.prompt_version)
@@ -647,6 +664,16 @@ def main():
     out.write_text(html, encoding="utf-8")
     print(f"\n[OK] 报告已生成: {out}")
     print(f"     大小: {out.stat().st_size/1024:.1f} KB")
+
+    # 同时产出 GitHub Pages 入口 docs/index.html。
+    # 直接把整份 HTML 复制过去，避免"生成物"与"发布物"两份内容漂移；
+    # 若只想生成本地报告，加 --no-pages 跳过。
+    if not args.no_pages:
+        pages = REPO_ROOT / "docs" / "index.html"
+        pages.parent.mkdir(parents=True, exist_ok=True)
+        pages.write_text(html, encoding="utf-8")
+        print(f"[OK] Pages 入口已同步: {pages}")
+        print(f"     线上地址: https://cdutfvyhgibuh.github.io/ChineseSimpleQA-Local-Eval/")
 
 
 if __name__ == "__main__":

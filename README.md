@@ -6,6 +6,9 @@
 > 固定同一套经过人工校准的本地 Judge，完成 3000 题 × 3 模型的统一评测，
 > 并完整保留预测与判定原始数据，使实验可复现、可复核、可更换 Judge。
 
+📊 **[在线查看交互式评测报告 →](https://cdutfvyhgibuh.github.io/ChineseSimpleQA-Local-Eval/)**
+（8 张可交互图表：总体指标、分类别热力图、难度分层、模型互补性、Judge 可信度）
+
 ---
 
 ## English Abstract
@@ -565,9 +568,14 @@ ChineseSimpleQA-Local-Eval/
 ├── run_judge_calibration.py     # Judge 校准实验
 ├── analyze_calibration.py       # 校准结果分析（含人工核验真值表）
 ├── make_report.py               # HTML 报告生成（Plotly 交互图表）
+├── verify_readme.py             # 本文件数字与原始数据的一致性核验
 ├── config_local.yaml            # 评测配置
+├── requirements.txt             # 运行依赖
+├── LICENSE                      # MIT + 第三方内容说明
 ├── data/
 │   └── chinese_simpleqa.jsonl   # 数据集（3000 题）
+├── docs/
+│   └── index.html               # GitHub Pages 入口（make_report.py 同时产出）
 └── results/
     ├── predictions/             # 3 个目标模型的 9000 条预测
     ├── reviews/                 # 9000 条 Judge 判定（逐条含原始输出）
